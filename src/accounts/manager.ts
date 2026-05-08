@@ -183,7 +183,9 @@ function buildAvailableAccount(
 ): AvailableAccount {
   return {
     token,
-    deviceId: getDeviceId(authDir, email),
+    deviceId: authDir
+      ? getDeviceId(authDir, email)
+      : `relay-${Buffer.from(email).toString("hex").slice(0, 64).padEnd(64, "0")}`,
     accountUuid: token.accountUuid,
     provider,
     chatgptAccountId:
@@ -328,7 +330,33 @@ export class AccountManager {
       this.accountOrder.push(token.email);
     }
 
-    saveToken(this.authDir, token);
+    if (this.authDir) saveToken(this.authDir, token);
+  }
+
+  addInMemoryAccount(token: TokenData): void {
+    if (!token.provider) token.provider = this.provider;
+    if (token.provider !== this.provider) {
+      throw new Error(
+        `addInMemoryAccount: token.provider=${token.provider} does not match manager.provider=${this.provider}`,
+      );
+    }
+    const existing = this.accounts.get(token.email);
+    if (existing) {
+      existing.token = token;
+      existing.cooldownUntil = 0;
+      existing.failureCount = 0;
+      existing.lastFailureKind = null;
+      existing.lastError = null;
+      existing.lastFailureAt = null;
+      existing.lastSuccessAt = new Date().toISOString();
+      existing.lastRefreshAt = new Date().toISOString();
+      return;
+    }
+    const state = this.createAccountState(token);
+    state.lastSuccessAt = new Date().toISOString();
+    state.lastRefreshAt = new Date().toISOString();
+    this.accounts.set(token.email, state);
+    this.accountOrder.push(token.email);
   }
 
   /**

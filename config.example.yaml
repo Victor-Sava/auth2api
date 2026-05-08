@@ -11,6 +11,31 @@ api-keys:
 # Maximum JSON request body size
 body-limit: "200mb"
 
+# Manually configured third-party relay providers. These participate in the
+# same /v1/chat/completions, /v1/responses, /v1/messages and /v1/models surface
+# as OAuth providers.
+relays:
+  # OpenAI-compatible relay example.
+  # - id: "third-party"
+  #   protocol: "openai-chat"       # upstream speaks /v1/chat/completions
+  #   base-url: "https://api.example.com"
+  #   api-key: "sk-your-relay-key"
+  #   models: ["gpt-4o", "claude-3-5-sonnet"]
+  #   model-prefixes: ["relay/"]    # route relay/* model names here
+  #   strip-model-prefix: "relay/"  # send gpt-4o upstream instead of relay/gpt-4o
+  #   headers:
+  #     X-Custom-Header: "optional"
+
+  # Anthropic-compatible relay example.
+  # - id: "anthropic-relay"
+  #   protocol: "anthropic-messages" # upstream speaks /v1/messages
+  #   base-url: "https://anthropic-relay.example.com"
+  #   api-key: "sk-your-relay-key"
+  #   api-key-header: "x-api-key"    # default is Authorization: Bearer
+  #   models: ["relay/claude-sonnet-4-6"]
+  #   strip-model-prefix: "relay/"
+  #   count-tokens: true             # enable /v1/messages/count_tokens passthrough
+
 # Upstream request timeouts
 timeouts:
   messages-ms: 120000         # non-stream /v1/messages timeout

@@ -1,11 +1,11 @@
-import fs from "fs";
+﻿import fs from "fs";
 import path from "path";
-import { ProviderId, TokenData, TokenStorage } from "./types";
+import { BuiltInProviderId, ProviderId, TokenData, TokenStorage } from "./types";
 import { decodeJwtPayload } from "../utils/jwt";
 
 // Filename prefix on disk for each provider. "claude" is kept for the
 // anthropic provider so existing token files keep loading.
-const FILENAME_PREFIX: Record<ProviderId, string> = {
+const FILENAME_PREFIX: Record<BuiltInProviderId, string> = {
   anthropic: "claude",
   codex: "codex",
   cursor: "cursor",
@@ -14,12 +14,24 @@ const FILENAME_PREFIX: Record<ProviderId, string> = {
 function normaliseProvider(type: TokenStorage["type"] | undefined): ProviderId {
   if (type === "cursor") return "cursor";
   if (type === "codex") return "codex";
-  return "anthropic"; // "claude" or missing → anthropic (legacy files)
+  if (type && type !== "claude") return type;
+  return "anthropic"; // "claude" or missing => anthropic (legacy files)
+}
+
+function filenamePrefix(provider: ProviderId): string {
+  if (isBuiltInProviderId(provider)) {
+    return FILENAME_PREFIX[provider];
+  }
+  return provider;
+}
+
+function isBuiltInProviderId(provider: ProviderId): provider is BuiltInProviderId {
+  return provider === "anthropic" || provider === "codex" || provider === "cursor";
 }
 
 /**
  * Extract chatgpt_plan_type from an id_token JWT. Used as a fallback when the
- * persisted token file pre-dates N1 (no plan_type column) — saves the user
+ * persisted token file pre-dates N1 (no plan_type column) 鈥?saves the user
  * from having to re-login just to populate the field.
  */
 function planTypeFromIdToken(idToken: string | undefined): string | undefined {
@@ -78,7 +90,7 @@ export function saveToken(authDir: string, data: TokenData): void {
   const sanitized = data.email
     .replace(/[^a-zA-Z0-9@._-]/g, "_")
     .replace(/\.\./g, "_");
-  const prefix = FILENAME_PREFIX[data.provider ?? "anthropic"];
+  const prefix = filenamePrefix(data.provider ?? "anthropic");
   const filename = `${prefix}-${sanitized}.json`;
   const filePath = path.join(authDir, filename);
   fs.writeFileSync(filePath, JSON.stringify(tokenToStorage(data), null, 2), {
@@ -92,7 +104,7 @@ export function loadAllTokens(
 ): TokenData[] {
   if (!fs.existsSync(authDir)) return [];
   const allFiles = fs.readdirSync(authDir);
-  const matchPrefix = provider ? FILENAME_PREFIX[provider] : null;
+  const matchPrefix = provider ? filenamePrefix(provider) : null;
   const files = allFiles.filter((f) => {
     if (!f.endsWith(".json")) return false;
     if (matchPrefix) return f.startsWith(`${matchPrefix}-`);
@@ -116,3 +128,5 @@ export function loadAllTokens(
   }
   return tokens;
 }
+
+

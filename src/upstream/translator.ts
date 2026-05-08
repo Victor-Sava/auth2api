@@ -5,7 +5,7 @@ function compactUuid(): string {
   return uuidv4().replace(/-/g, "");
 }
 
-function formatChatUsage(
+export function formatChatUsage(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,
@@ -19,7 +19,7 @@ function formatChatUsage(
   };
 }
 
-function formatResponsesUsage(
+export function formatResponsesUsage(
   inputTokens: number,
   outputTokens: number,
   cachedTokens: number,

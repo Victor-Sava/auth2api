@@ -66,6 +66,7 @@ function makeConfig(): Config {
       "count-tokens-ms": 30000,
     },
     debug: "off",
+    relays: [],
   };
 }
 

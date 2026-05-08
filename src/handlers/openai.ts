@@ -17,6 +17,7 @@ import {
 import { handleStreamingResponse, readSseEvents } from "../upstream/streaming";
 import { normalizeCodexResponsesBody } from "../upstream/codex-api";
 import { normalizeCursorResponsesBody } from "../upstream/cursor-api";
+import { openaiChatToResponses } from "../upstream/openai-chat-translator";
 import {
   chatToResponsesRequest,
   responsesToChatCompletion,
@@ -469,6 +470,54 @@ async function proxyCursorChatCompletions(args: {
   });
 }
 
+async function proxyOpenAIChatCompletions(args: {
+  req: Request;
+  resp: ExpressResponse;
+  config: Config;
+  provider: ReturnType<ProviderRegistry["forModel"]>;
+  body: any;
+}): Promise<void> {
+  const { req, resp, config, provider, body } = args;
+  await proxyWithRetry(`ChatCompletions(${provider.id})`, resp, config, {
+    manager: provider.manager,
+    upstream: (account, signal) =>
+      provider.callMessages({
+        body,
+        request: req,
+        account,
+        config,
+        signal,
+      }),
+    success: async (upstream, account) => {
+      if (body.stream) {
+        const result = await handleStreamingResponse(upstream, resp);
+        if (result.completed) {
+          provider.manager.recordSuccess(account.token.email, result.usage);
+        } else if (!result.clientDisconnected) {
+          provider.manager.recordFailure(
+            account.token.email,
+            "network",
+            "stream terminated before completion",
+          );
+        }
+        return;
+      }
+      const json = await upstream.json();
+      provider.manager.recordSuccess(account.token.email, {
+        inputTokens: json?.usage?.prompt_tokens || 0,
+        outputTokens: json?.usage?.completion_tokens || 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens:
+          json?.usage?.prompt_tokens_details?.cached_tokens || 0,
+        reasoningOutputTokens:
+          json?.usage?.completion_tokens_details?.reasoning_tokens || 0,
+      });
+      resp.json(json);
+    },
+    errorAdapter: openaiErrorBody,
+  });
+}
+
 // POST /v1/chat/completions — OpenAI Chat Completions format
 export function createChatCompletionsHandler(
   config: Config,
@@ -527,6 +576,17 @@ export function createChatCompletionsHandler(
           body,
           model,
           stream,
+        });
+        return;
+      }
+
+      if (provider.nativeFormat === "openai-chat") {
+        await proxyOpenAIChatCompletions({
+          req,
+          resp,
+          config,
+          provider,
+          body: { ...body, model },
         });
         return;
       }
@@ -663,6 +723,45 @@ export function createResponsesHandler(
                 "stream terminated before completion",
               );
             }
+          },
+          errorAdapter: openaiErrorBody,
+        });
+        return;
+      }
+
+      if (provider.nativeFormat === "openai-chat") {
+        const chatBody = {
+          ...body,
+          messages: body.messages || body.input,
+          model,
+          stream: false,
+        };
+        if (!Array.isArray(chatBody.messages)) {
+          chatBody.messages = [{ role: "user", content: String(body.input) }];
+        }
+        await proxyWithRetry(`Responses(${provider.id})`, resp, config, {
+          manager: provider.manager,
+          upstream: (account, signal) =>
+            provider.callMessages({
+              body: chatBody,
+              request: req,
+              account,
+              config,
+              signal,
+            }),
+          success: async (upstream, account) => {
+            const chatJson = await upstream.json();
+            provider.manager.recordSuccess(account.token.email, {
+              inputTokens: chatJson?.usage?.prompt_tokens || 0,
+              outputTokens: chatJson?.usage?.completion_tokens || 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens:
+                chatJson?.usage?.prompt_tokens_details?.cached_tokens || 0,
+              reasoningOutputTokens:
+                chatJson?.usage?.completion_tokens_details?.reasoning_tokens ||
+                0,
+            });
+            resp.json(openaiChatToResponses(chatJson, model));
           },
           errorAdapter: openaiErrorBody,
         });

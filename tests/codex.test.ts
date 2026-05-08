@@ -714,6 +714,7 @@ function makeCodexConfig(
       "count-tokens-ms": 1000,
     },
     debug: "off",
+    relays: [],
   };
 }
 
@@ -1022,6 +1023,7 @@ function makeNotifyConfig(): Config2 {
       "count-tokens-ms": 1000,
     },
     debug: "off",
+    relays: [],
   };
 }
 

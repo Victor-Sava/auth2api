@@ -1,4 +1,5 @@
-export type ProviderId = "anthropic" | "codex" | "cursor";
+export type BuiltInProviderId = "anthropic" | "codex" | "cursor";
+export type ProviderId = BuiltInProviderId | (string & {});
 
 export interface PKCECodes {
   codeVerifier: string;

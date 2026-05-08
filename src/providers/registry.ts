@@ -1,8 +1,10 @@
 import { ProviderId } from "../auth/types";
+import { RelayProviderConfig } from "../config";
 import { resolveModel } from "../upstream/translator";
 import { buildAnthropicProvider } from "./anthropic";
 import { buildCodexProvider } from "./codex";
 import { buildCursorProvider } from "./cursor";
+import { buildRelayProvider } from "./relay";
 import { Provider } from "./types";
 
 export interface ProviderRegistry {
@@ -14,12 +16,17 @@ export interface ProviderRegistry {
   withAccounts(): Provider[];
 }
 
-export function buildRegistry(authDir: string): ProviderRegistry {
+export function buildRegistry(
+  authDir: string,
+  relays: RelayProviderConfig[] = [],
+): ProviderRegistry {
   const anthropic = buildAnthropicProvider(authDir);
   const codex = buildCodexProvider(authDir);
   const cursor = buildCursorProvider(authDir);
-  const byId: Record<ProviderId, Provider> = { anthropic, codex, cursor };
-  const ordered: Provider[] = [anthropic, codex, cursor];
+  const relayProviders = relays.map((relay) => buildRelayProvider(relay));
+  const byId: Record<string, Provider> = { anthropic, codex, cursor };
+  for (const relay of relayProviders) byId[relay.id] = relay;
+  const ordered: Provider[] = [anthropic, codex, cursor, ...relayProviders];
 
   return {
     get: (id) => {
@@ -32,6 +39,9 @@ export function buildRegistry(authDir: string): ProviderRegistry {
       // Explicit `cursor-` / `cr/` prefix always wins so users can force the
       // Cursor backend when they have multiple providers logged in.
       if (cursor.matchesModel(resolved)) return cursor;
+      for (const relay of relayProviders) {
+        if (relay.matchesModel(resolved)) return relay;
+      }
 
       // "Cursor exclusive" mode: when only Cursor has accounts, route every
       // unknown / Anthropic-style / OpenAI-style model through Cursor. This
@@ -40,7 +50,8 @@ export function buildRegistry(authDir: string): ProviderRegistry {
       const cursorOnly =
         cursor.manager.accountCount > 0 &&
         anthropic.manager.accountCount === 0 &&
-        codex.manager.accountCount === 0;
+        codex.manager.accountCount === 0 &&
+        relayProviders.every((p) => p.manager.accountCount === 0);
       if (cursorOnly) return cursor;
 
       // Multi-provider setups: fall back to the explicit family routes.

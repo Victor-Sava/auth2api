@@ -13,6 +13,12 @@ import {
   makeResponsesToAnthropicState,
   drainCodexResponsesSse,
 } from "../upstream/responses-translator";
+import {
+  openaiChatToAnthropicMessage,
+  makeOpenAIChatToAnthropicSSEState,
+  openaiChatSSEToAnthropic,
+  finishOpenAIChatToAnthropicSSE,
+} from "../upstream/openai-chat-translator";
 
 function internalError(resp: ExpressResponse): void {
   if (!resp.headersSent) {
@@ -20,6 +26,35 @@ function internalError(resp: ExpressResponse): void {
   } else if (!resp.writableEnded) {
     resp.end();
   }
+}
+
+async function* handleOpenAIChatEvents(
+  upstream: globalThis.Response,
+): AsyncGenerator<{ data: any }> {
+  if (!upstream.body) return;
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of upstream.body as any) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const dataLines = raw
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+      if (!dataLines.length) continue;
+      const text = dataLines.join("\n");
+      if (text === "[DONE]") continue;
+      try {
+        yield { data: JSON.parse(text) };
+      } catch {
+        /* ignore malformed SSE event */
+      }
+    }
+  }
+  buffer += decoder.decode();
 }
 
 /**
@@ -204,6 +239,64 @@ export function createMessagesHandler(
             message: `This model is served by the ${provider.id} provider, which does not support /v1/messages.`,
             type: "unsupported_endpoint_for_provider",
             provider: provider.id,
+          },
+        });
+        return;
+      }
+
+      if (provider.nativeFormat === "openai-chat") {
+        const chatBody = {
+          ...body,
+          messages: body.messages,
+          model,
+        };
+        await proxyWithRetry(`Messages(${provider.id})`, resp, config, {
+          manager: provider.manager,
+          upstream: (account, signal) =>
+            provider.callMessages({
+              body: chatBody,
+              request: req,
+              account,
+              config,
+              signal,
+            }),
+          success: async (upstream, account) => {
+            if (body.stream) {
+              resp.status(upstream.status);
+              resp.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+              resp.setHeader("Cache-Control", "no-cache, no-transform");
+              resp.setHeader("Connection", "keep-alive");
+              const state = makeOpenAIChatToAnthropicSSEState();
+              for await (const { data } of handleOpenAIChatEvents(upstream)) {
+                for (const chunk of openaiChatSSEToAnthropic(data, state, model)) {
+                  resp.write(chunk);
+                }
+              }
+              for (const chunk of finishOpenAIChatToAnthropicSSE(state)) {
+                resp.write(chunk);
+              }
+              resp.end();
+              provider.manager.recordSuccess(account.token.email, {
+                inputTokens: state.inputTokens,
+                outputTokens: state.outputTokens,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 0,
+                reasoningOutputTokens: 0,
+              });
+              return;
+            }
+            const chatJson = await upstream.json();
+            provider.manager.recordSuccess(account.token.email, {
+              inputTokens: chatJson?.usage?.prompt_tokens || 0,
+              outputTokens: chatJson?.usage?.completion_tokens || 0,
+              cacheCreationInputTokens: 0,
+              cacheReadInputTokens:
+                chatJson?.usage?.prompt_tokens_details?.cached_tokens || 0,
+              reasoningOutputTokens:
+                chatJson?.usage?.completion_tokens_details?.reasoning_tokens ||
+                0,
+            });
+            resp.json(openaiChatToAnthropicMessage(chatJson, model));
           },
         });
         return;

@@ -5,7 +5,10 @@ import { Config } from "../config";
 
 export type { ProviderId };
 
-export type NativeFormat = "anthropic-messages" | "openai-responses";
+export type NativeFormat =
+  | "anthropic-messages"
+  | "openai-chat"
+  | "openai-responses";
 
 export interface UpstreamCallContext {
   body?: any;

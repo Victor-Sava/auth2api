@@ -34,6 +34,7 @@ function makeConfig(authDir: string): Config {
       "count-tokens-ms": 30000,
     },
     debug: "off",
+    relays: [],
   };
 }
 
@@ -2067,4 +2068,78 @@ test("codex /v1/responses non-stream prefers upstream-populated output over stre
     jsonResp.body.output[0].content[0].text,
     "FROM_COMPLETED",
   );
+});
+
+test("configured OpenAI relay serves chat completions and advertises models", async (t) => {
+  const authDir = fs.mkdtempSync(path.join(os.tmpdir(), "auth2api-relay-"));
+  const config = makeConfig(authDir);
+  config.relays = [
+    {
+      id: "third-party",
+      protocol: "openai-chat",
+      "base-url": "https://relay.example.com",
+      "api-key": "relay-key",
+      models: ["relay-model"],
+      "model-prefixes": ["relay/"],
+      "strip-model-prefix": "relay/",
+    },
+  ];
+
+  const seen: Array<{ input: string | URL | Request; init?: RequestInit }> = [];
+  const restoreFetch = withMockedFetch(async (input, init) => {
+    seen.push({ input, init });
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-relay",
+        object: "chat.completion",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "hello from relay" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  const registry = buildRegistry(authDir, config.relays);
+  const app = createServer(config, registry);
+  const server = createHttpServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    restoreFetch();
+    await stopApp(server);
+    fs.rmSync(authDir, { recursive: true, force: true });
+  });
+
+  const modelsResp = await requestJson({
+    server,
+    method: "GET",
+    path: "/v1/models",
+    headers: { Authorization: "Bearer test-key" },
+  });
+  assert.equal(modelsResp.status, 200);
+  assert.ok(modelsResp.body.data.some((m: any) => m.id === "relay-model"));
+
+  const chatResp = await requestJson({
+    server,
+    method: "POST",
+    path: "/v1/chat/completions",
+    headers: { Authorization: "Bearer test-key" },
+    body: {
+      model: "relay/relay-model",
+      messages: [{ role: "user", content: "hi" }],
+    },
+  });
+
+  assert.equal(chatResp.status, 200);
+  assert.equal(chatResp.body.choices[0].message.content, "hello from relay");
+  assert.equal(String(seen[0].input), "https://relay.example.com/v1/chat/completions");
+  assert.equal(
+    (seen[0].init?.headers as Record<string, string>).Authorization,
+    "Bearer relay-key",
+  );
+  assert.equal(JSON.parse(String(seen[0].init?.body)).model, "relay-model");
 });
